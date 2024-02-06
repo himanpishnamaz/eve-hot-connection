@@ -1,0 +1,5 @@
+paramiko
+requests
+python-dotenv
+xmltodict
+rich

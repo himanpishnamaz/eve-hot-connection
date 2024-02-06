@@ -1,74 +1,39 @@
 import sys
 import os
-import json
-import requests
-import paramiko
 import dotenv
 from signal import signal, SIGINT
 
 
-from util import init_args, show_table
-from util import find_lab_name, handler
-from util import get_lab_lists, get_lab_nodes
-from util import show_users, show_node_interfaces
-from util import select_node_interface
-from util import is_node_id, get_linux_interfaces
-from util import get_lab_file, update_lab_file
+from util import init_args
+from util import handler
 from util import create_network, connect_node_to_network
-from util import connect_to_eve
+
+from util import EVE_HTTP
+from util import EVE_SSH
+from util import EVE_INFO
+
+from util import init_server_info
+from util import args_check
 
 if __name__ == "__main__":
     dotenv.load_dotenv()
-    eve_server_ip = os.environ.get("eve_server_ip")
-    eve_server_user = os.environ.get("eve_server_user")
-    eve_server_password = os.environ.get("eve_server_password")
-    http_user = os.environ.get("http_user")
-    http_password = os.environ.get("http_password")
-    eve_url = f"http://{eve_server_ip}/api"
+    eve_info = EVE_INFO()
+
+    init_server_info(eve_info)
+
 
     signal(SIGINT, handler)
+    args = init_args().parse_args()
 
     # login to eve api server as admin
-    session = connect_to_eve(eve_url=eve_url, http_user=http_user, http_password=http_password)
+    eve_http = EVE_HTTP(eve_url=eve_info.url, http_user=eve_info.http_user, http_password=eve_info.http_pass)
 
-    args = init_args().parse_args()
-    
-    lab_lists = get_lab_lists(session, eve_url)
-    # show all labs using -L
-    if args.lab_list:
-        show_table({"List of Labs": lab_lists})
-        sys.exit(0)
+    args_check(args, eve_http)
 
-    # show all users using -U
-    if args.users_list:
-        show_users(session, eve_url)
-        sys.exit()
-
-    # get current loged-in user ID
-    response = session.get(f"{eve_url}/auth")
-    user_id = response.json()["data"]["tenant"]
-
-    if args.current_lab:
-        current_lab = args.current_lab
-    else:
-        current_lab = input("Please insert lab id: ")
-    # find lab in question
-    current_lab = find_lab_name(lab_lists, current_lab)
-
-    # current_lab = {'filename': 'test.unl', 'id': '2221f8a3-c299-40f2-b913-a202099d3a15', 'name': 'test', 'path': '/test.unl'}
-    lab_path = current_lab["path"].replace(" ", "%20")
-    lab_file_name = current_lab["filename"]
-
-    # get all nodes in current lab
-    all_nodes = get_lab_nodes(session, eve_url, lab_path)
-
-    # get list of lab networks
-    response = session.get(f"{eve_url}/labs/{lab_path}/networks")
-    lab_networks = response.json()["data"]
-    if lab_networks:
-        for _, network in lab_networks.items():
+    if eve_http.lab_networks:
+        for _, network in eve_http.lab_networks.items():
             if network["visibility"] == 1:
-                all_nodes.append({
+                eve_http.lab_nodes.append({
                     "id": f"net{network['id']}",
                     "name": network["name"],
                     "status": "passive",
@@ -76,76 +41,43 @@ if __name__ == "__main__":
                     "ethernet": str(network["count"])
                 })
 
-    # show all all nodes table
-    if not all_nodes:
-        print("[    Info  ] ==> there is no node in the LAB")
-        sys.exit(1)
-    
-    if args.all_nodes:
-        show_table({"Nodes List": all_nodes})
-        sys.exit(0)
-
-
-    # get list of lab links
-    response = session.get(f"{eve_url}/labs/{lab_path}/links")
-    # {"ethernet":{"1":"Net-7750SR1iface_1"},"serial":[]}
-    all_links = response.json()["data"]
-
-    if args.node_id:
-        if node:= is_node_id(args.node_id, all_nodes):
-            show_node_interfaces(session, eve_url, lab_path, node)
-            sys.exit()
-
-#  ssh connect to eve-ng
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        client.connect(eve_server_ip, username=eve_server_user, password=eve_server_password, timeout=1.0)
-    except paramiko.AuthenticationException as e:
-        print(f"[    Error ]==> {e}")
-        sys.exit(1)
-    except:
-        print(f"[    Error ]==> Could not open ssh connection to eve-ng server {eve_server_ip}")
-        sys.exit(1)
-
+    eve_ssh = EVE_SSH(ip=eve_info.ip, user=eve_info.server_user, password=eve_info.server_pass)
+    eve_ssh.connect()
 
     print("[    Info  ] ==> Insert Information for Node A and B")
-    node_a, node_a_intf, node_a_type = select_node_interface(session=session, eve_url=eve_url, lab_path=lab_path, device="A", all_nodes=all_nodes)
+    node_a, node_a_intf, node_a_type = eve_http.select_node_interface(device="A")
     # check if interface is not connected
-    if node_a_intf["connected"] == "True":
+    if node_a_type != "net" and node_a_intf["connected"] == "True":
         print("[    Error ] ==> selected Interface is connected already.")
         sys.exit(1)
-    node_b, node_b_intf, node_b_type = select_node_interface(session=session, eve_url=eve_url, lab_path=lab_path, device="B", all_nodes=all_nodes)
+    node_b, node_b_intf, node_b_type = eve_http.select_node_interface(device="B")
     # check if interface is not connected
-    if node_b_intf["connected"] == "True":
+    if node_b_type != "net" and node_b_intf["connected"] == "True":
         print("[    Error ] ==> selected Interface is connected already.")
         sys.exit(1)
 
     if node_a_type == "node" and node_b_type == "node":
-        linux_intf_a = f"vunl{user_id}_{node_a['id']}_{node_a_intf['id']}"
-        linux_intf_b = f"vunl{user_id}_{node_b['id']}_{node_b_intf['id']}"
+        linux_intf_a = f"vunl{eve_http.user_id}_{node_a['id']}_{node_a_intf['id']}"
+        linux_intf_b = f"vunl{eve_http.user_id}_{node_b['id']}_{node_b_intf['id']}"
         print(f"[    Info  ] ==> NOde A interface name on Linux = {linux_intf_a}")
         print(f"[    Info  ] ==> NOde B interface name on Linux = {linux_intf_b}")
 
-        # get all interfaces from eve-ng server
-        linux_interfaces = get_linux_interfaces(client)
-
         # get last bridge id
-        if lab_networks:
+        if eve_http.lab_networks:
             networks = []
-            for item in lab_networks:
+            for item in eve_http.lab_networks:
                 networks.append(int(item))
             networks.sort()
             network_id = networks[-1] + 1
         else:
             network_id = 1
-        bridge_name = f"vnet{ user_id }_{network_id}"
+        bridge_name = f"vnet{ eve_http.user_id }_{network_id}"
 
         print(f"[    Info  ] ==> Bridge name on Linux = {bridge_name}")
 
 
         # read lab file
-        lab_file = get_lab_file(client=client, lab_file_name=lab_file_name)
+        lab_file = eve_ssh.get_lab_file(lab_info=eve_http.lab)
 
         if "networks" in lab_file["lab"]["topology"]:
             lab_networks = lab_file["lab"]["topology"]["networks"]
@@ -160,23 +92,23 @@ if __name__ == "__main__":
         connect_node_to_network(lab_nodes, node_b, node_b_intf, network_id)
 
         print("[    Info  ] ==> Update lab file")
-        update_lab_file(client, lab_file_name, lab_file)
+        eve_ssh.update_lab_file(lab_info=eve_http.lab, file_data=lab_file)
 
         print("[    Info  ] ==> create Linux bridge interface")
-        _stdin, _stdout, _stderr = client.exec_command(f"ip link add {bridge_name} mtu 9000 type bridge")
-        _stdin, _stdout, _stderr = client.exec_command(f"ip link set {bridge_name} up")
+        eve_ssh.send_command(f"ip link add {bridge_name} mtu 9000 type bridge")
+        eve_ssh.send_command(f"ip link set {bridge_name} up")
         print("[    Info  ] ==> connect node interfaces to bridge")
         if node_a["status"] == "ON":
-            _stdin, _stdout, _stderr = client.exec_command(f"ip link set {linux_intf_a} master {bridge_name}")
+            eve_ssh.send_command(f"ip link set {linux_intf_a} master {bridge_name}")
         if node_b["status"] == "ON":
-            _stdin, _stdout, _stderr = client.exec_command(f"ip link set {linux_intf_b} master {bridge_name}")
+            eve_ssh.send_command(f"ip link set {linux_intf_b} master {bridge_name}")
 
 
         print("[    Info  ] ==> Close SSH connection")
-        client.close()
+        eve_ssh.client.close()
         print("[    Info  ] ==> Close HTTP connection")
-        session.close()
-        del client, _stdin, _stdout, _stderr
+        eve_http.session.close()
+
 
     elif node_a_type == "net" and node_b_type == "net":
         print("[    Error ] ==> connot connect Bridge to Bridge")
@@ -184,22 +116,22 @@ if __name__ == "__main__":
 
     elif node_a_type == "net" or node_b_type == "net":
         if node_a_type == "node":
-            linux_intf = f"vunl{user_id}_{node_a['id']}_{node_a_intf['id']}"
+            linux_intf = f"vunl{eve_http.user_id}_{node_a['id']}_{node_a_intf['id']}"
             node = node_a
             node_intf = node_a_intf
             network_id = node_b["id"].split("net")[1]
             network = node_b
         else:
-            linux_intf = f"vunl{user_id}_{node_b['id']}_{node_b_intf['id']}"
+            linux_intf = f"vunl{eve_http.user_id}_{node_b['id']}_{node_b_intf['id']}"
             node = node_b
             node_intf = node_b_intf
             network_id = node_a["id"].split("net")[1]
             network = node_a
         
         print(f"[    Info  ] ==> Node interface name on Linux = {linux_intf}")
-        linux_interfaces = get_linux_interfaces(client)
+        linux_interfaces = eve_ssh.get_linux_interfaces()
 
-        lab_file = get_lab_file(client=client, lab_name=lab_file_name)
+        lab_file = eve_ssh.get_lab_file(lab_info=eve_http.lab)
 
         if "networks" in lab_file["lab"]["topology"]:
             lab_networks = lab_file["lab"]["topology"]["networks"]
@@ -210,10 +142,10 @@ if __name__ == "__main__":
         
         connect_node_to_network(lab_nodes, node, node_intf, network_id)
 
-        update_lab_file(client, lab_file_name, lab_file)
+        eve_ssh.update_lab_file(lab_info=eve_http.lab, file_data=lab_file)
 
         if network["type"] == "bridge":
-            bridge_name = f"vnet{user_id}_{network_id}"
+            bridge_name = f"vnet{eve_http.user_id}_{network_id}"
         else:
             bridge_name = network["type"]
         print(f"[    Info  ] ==> Bridge name on Linux = {bridge_name}")
@@ -222,12 +154,12 @@ if __name__ == "__main__":
         bridge = list(filter(lambda x: x["ifname"] == bridge_name, linux_interfaces))
         if node["status"] == "ON":
             if not bridge:
-                _stdin, _stdout, _stderr = client.exec_command(f"ip link add {bridge_name} mtu 9000 type bridge")
-                _stdin, _stdout, _stderr = client.exec_command(f"ip link set {bridge_name} up")            
-            _stdin, _stdout, _stderr = client.exec_command(f"ip link set {linux_intf} master {bridge_name}")
+                eve_ssh.send_command(f"ip link add {bridge_name} mtu 9000 type bridge")
+                eve_ssh.send_command(f"ip link set {bridge_name} up")            
+            eve_ssh.send_command(f"ip link set {linux_intf} master {bridge_name}")
 
         print("[    Info  ] ==> Close SSH connection")
-        client.close()
+        eve_ssh.client.close()
         print("[    Info  ] ==> Close HTTP connection")
-        session.close()
-        del client, _stdin, _stdout, _stderr
+        eve_http.session.close()
+

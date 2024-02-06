@@ -4,130 +4,201 @@ import argparse
 import json
 import requests
 
+import paramiko
+
 import xmltodict
 from rich.console import Console
 from rich.table import Table
 
 
+class EVE_HTTP():
+    def __init__(self, eve_url, http_user, http_password) -> None:
+        self.url = eve_url
+        self.user = http_user
+        self.password = http_password
+        self.lab_name = ""
+
+    def connect(self):
+        self.session = requests.session()
+        data = {"username":self.user,"password":self.password}
+        response = self.session.post(f"{self.url}/auth/login", data=json.dumps(data))
+        if not response.ok:
+            return response
+        else:
+            response = self.session.get(f"{self.url}/auth")
+            self.user_id = response.json()["data"]["tenant"]
+            return True
+
+    def get_lab_lists(self):
+        # get all files and folder from eve-ng api
+        def get_folder_data(folder):
+            path = folder["path"]
+            response = self.session.get(f"{self.url}/folders{path}")
+            return response.json()["data"]["folders"], response.json()["data"]["labs"]
+        response = self.session.get(f"{self.url}/folders/")
+        list_of_files = response.json()["data"]
+        labs= list_of_files["labs"]
+        folders: list = list_of_files["folders"]
+        while folders:
+            folder = folders.pop()
+            if folder["name"] == "..":
+                continue
+            dir, lab = get_folder_data(folder)
+            labs = labs + lab
+            folders = folders + dir
+        result = []
+        for lab in labs:
+            path = lab["path"]
+            response = self.session.get(f"{self.url}/labs{path}")
+            data = response.json()["data"]
+            data["path"] = path
+            for item in ["author", "lock", "scripttimeout",
+                        "version","body","description"]:
+                data.pop(item)
+            result.append(data)
+        self.lab_lists = result
+
+    def get_users(self):
+        # show all eve-ng users
+        response = self.session.get(f"{self.url}/users/")
+        data = response.json()["data"]
+        result = []
+        for _, user in data.items():
+            for item in ["expiration", "session", "pod", "pexpiration"]:
+                user.pop(item, None)
+            result.append(user)
+        return result
+
+    def find_lab_name(self):
+        # find lab base on name or ID
+        lab = list(filter(lambda x: self.lab_name in x["name"] or self.lab_name in x["id"], self.lab_lists))
+        if len(lab) > 1:
+            print(f"[    Error ] ==> We found more than one lab with same {self.lab_name} information.\n")
+            return False
+        elif len(lab) == 0:
+            print(f"[   Error ] ==> We couldn't find {self.lab_name} in below lists")
+            return False
+        self.lab = lab[0]
+        self.lab_name = self.lab["filename"]
+        self.lab_path = self.lab["path"].replace(" ", "%20")
+        return self.lab
+
+    def get_lab_networks(self):
+        response = self.session.get(f"{self.url}/labs/{self.lab_path}/networks")
+        self.lab_networks = response.json()["data"]
+
+    def get_lab_nodes(self):
+        # get lab nodes
+        response = self.session.get(f"{self.url}/labs{self.lab_path}/nodes")
+        nodes = response.json()["data"]
+        result = []
+        if nodes:
+            for _, node in nodes.items():
+                for item in ["console", "delay", "left", "icon", "image",
+                            "ram", "template", "top", "url", "config_list",
+                            "config", "cpu", "uuid","nvram", "serial"]:
+                    node.pop(item, None)
+                node["id"] = str(node["id"])
+                node["ethernet"] = str(node["ethernet"])
+                node["status"] = "OFF" if node["status"] == 0 else "ON"
+                result.append(node)
+        self.lab_nodes = result
+
+    def is_node_id(self, node_id):
+        if node := list(filter(lambda x: x["id"] == node_id, self.lab_nodes)):
+            return node[0]
+        else:
+            return False
+
+    def get_node_interfaces(self, node):
+        response = self.session.get(f"{self.url}/labs/{self.lab_path}/nodes/{node["id"]}/interfaces")
+        data = response.json()["data"]
+        if data["sort"] in ["qemu", "vpcs"]:
+            for id, link in enumerate(data["ethernet"]):
+                link["network_id"] = str(link["network_id"])
+                link["connected"] = "True" if int(link["network_id"]) != 0 else "False"
+                link["id"] = str(id)
+        elif data["sort"] == "iol":
+            tmp = []
+            for id, link in data["ethernet"].items():
+                link["network_id"] = str(link["network_id"])
+                link["connected"] = "True" if int(link["network_id"]) != 0 else "False"
+                link["id"] = str(id)
+                tmp.append(link)
+            data["ethernet"] = tmp
+        return data["ethernet"]
+
+    def select_node_interface(self, device= ""):
+        # ask user to select a node fro a lab
+        show_table({"Nodes List": self.lab_nodes})
+        node = input(f"Please Insert Node {device} id from above table: ")
+        node = self.is_node_id(node)
+        if node == False:
+            print("[    Error ] ==> Input ID is not correct")
+            sys.exit(1)
+
+        if node["id"].startswith("net"):
+            return node, None, "net"
+
+        node_interfaces = self.get_node_interfaces(node)
+        show_table({f"Interfaces for {node['name']}": node_interfaces})
+        node_intf = input("Please Insert port name or id from above Table: ")
+        node_intf = list(filter(lambda x: x["id"] == node_intf or x["name"] == node_intf, node_interfaces))
+        if node_intf:
+            return node, node_intf[0], "node"
+        else:
+            print("[    Error ] ==> selected Interface is not exist")
+            sys.exit(1)
+
+class EVE_SSH():
+    def __init__(self, ip, user, password) -> None:
+        self.ip = ip
+        self.user = user
+        self.password = password
+    
+    def connect(self):
+        self.client =  paramiko.SSHClient()
+        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            self.client.connect(self.ip, username=self.user, password=self.password, timeout=1.0)
+        except paramiko.AuthenticationException as e:
+            print(f"[    Error ]==> {e}")
+            sys.exit(1)
+        except:
+            print(f"[    Error ]==> Could not open ssh connection to eve-ng server {self.ip}")
+            sys.exit(1)
+
+    def send_command(self, cmd):
+         _stdin, _stdout, _stderr = self.client.exec_command(cmd)
+
+
+    def get_lab_file(self, lab_info) -> xmltodict.parse:
+        # read the lab file and convert it to dict
+        path = lab_info["path"]
+        _stdin, _stdout,_stderr = self.client.exec_command(f"cat '/opt/unetlab/labs/{path}'")
+        lab_file = _stdout.read().decode()
+        return xmltodict.parse(lab_file)
+
+    def update_lab_file(self, lab_info, file_data):
+        path = lab_info["path"]
+        new_unl = xmltodict.unparse(file_data, pretty=True)
+        ftp = self.client.open_sftp()
+        file = ftp.file(f"/opt/unetlab/labs/{path}","w")
+        file.write(new_unl)
+        file.flush()
+        file.close()
+        ftp.close()
+
+    def get_linux_interfaces(self) -> json.loads:
+        # get linux server interfaces as json 
+        _stdin, _stdout,_stderr = self.client.exec_command("ip --json add")
+        linux_interfaces = _stdout.read().decode()
+        return json.loads(linux_interfaces)
 
 def handler(signal_received, frame):
     # Handle any cleanup here
     print('\nSIGINT or CTRL-C detected. Exiting gracefully')
     exit(0)
-
-def connect_to_eve(eve_url, http_user, http_password):
-    session = requests.session()
-    data = {"username":http_user,"password":http_password}
-    response = session.post(f"{eve_url}/auth/login", data=json.dumps(data))
-    if not response.ok:
-        print(response.text)
-        print("[    Error ] ==> Cannot connect to eve-ng api server. please check if the server information is correct.")
-        print(f"[    Info  ] ==> {eve_url =}")
-        print(f"[    Info  ] ==> {http_user =}")
-        print(f"[    Info  ] ==> {http_password =}")
-        sys.exit(1)
-    
-    return session
-
-
-def get_lab_lists(session, eve_url):
-    # get all files and folder from eve-ng api
-    def get_folder_data(folder):
-        nonlocal session
-        path = folder["path"]
-        response = session.get(f"{eve_url}/folders{path}")
-        return response.json()["data"]["folders"], response.json()["data"]["labs"]
-    response = session.get(f"{eve_url}/folders/")
-    list_of_files = response.json()["data"]
-    labs= list_of_files["labs"]
-    folders: list = list_of_files["folders"]
-    while folders:
-        folder = folders.pop()
-        if folder["name"] == "..":
-            continue
-        dir, lab = get_folder_data(folder)
-        labs = labs + lab
-        folders = folders + dir
-    result = []
-    for lab in labs:
-        path = lab["path"]
-        response = session.get(f"{eve_url}/labs{path}")
-        data = response.json()["data"]
-        data["path"] = path
-        for item in ["author", "lock", "scripttimeout",
-                     "version","body","description"]:
-            data.pop(item)
-        result.append(data)
-    return result
-
-def get_lab_nodes(session, eve_url, lab_path):
-    # get lab nodes
-    response = session.get(f"{eve_url}/labs{lab_path}/nodes")
-    nodes = response.json()["data"]
-    result = []
-    if nodes:
-        for _, node in nodes.items():
-            for item in ["console", "delay", "left", "icon", "image",
-                        "ram", "template", "top", "url", "config_list",
-                        "config", "cpu", "uuid","nvram", "serial"]:
-                node.pop(item, None)
-            node["id"] = str(node["id"])
-            node["ethernet"] = str(node["ethernet"])
-            node["status"] = "OFF" if node["status"] == 0 else "ON"
-            result.append(node)
-    return  result
-
-def show_users(session, eve_url):
-    # show all eve-ng users
-    response = session.get(f"{eve_url}/users/")
-    data = response.json()["data"]
-    result = []
-    for _, user in data.items():
-        for item in ["expiration", "session", "pod", "pexpiration"]:
-            user.pop(item)
-        result.append(user)
-    show_table({"List of all users": result})
-
-
-def select_node_interface(session, eve_url, lab_path, device, all_nodes):
-    # ask user to select a node fro a lab
-    show_table({"Nodes List": all_nodes})
-    node = input(f"Please Insert Node {device} id from above table: ")
-    node = is_node_id(node, all_nodes)
-
-    if node["id"].startswith("net"):
-        return node, None, "net"
-
-    node_interfaces = show_node_interfaces(session, eve_url, lab_path, node)
-    node_intf = input("Please Insert port name or id from above Table: ")
-    node_intf = list(filter(lambda x: x["id"] == node_intf or x["name"] == node_intf, node_interfaces))
-    if node_intf:
-        return node, node_intf[0], "node"
-    else:
-        print("[    Error ] ==> selected Interface is not exist")
-        sys.exit(1)
-
-
-def show_node_interfaces(session, eve_url, lab_path, node):
-    # show node Interfaces information
-    global all_nodes
-    response = session.get(f"{eve_url}/labs/{lab_path}/nodes/{node["id"]}/interfaces")
-    data = response.json()["data"]
-    if data["sort"] in ["qemu", "vpcs"]:
-        for id, link in enumerate(data["ethernet"]):
-            link["network_id"] = str(link["network_id"])
-            link["connected"] = "True" if int(link["network_id"]) != 0 else "False"
-            link["id"] = str(id)
-    elif data["sort"] == "iol":
-        tmp = []
-        for id, link in data["ethernet"].items():
-            link["network_id"] = str(link["network_id"])
-            link["connected"] = "True" if int(link["network_id"]) != 0 else "False"
-            link["id"] = str(id)
-            tmp.append(link)
-        data["ethernet"] = tmp
-    show_table({f"List of interfaces for node_name={node['name']} && node_id={node['id']}": data["ethernet"]})
-    return data["ethernet"]
 
 
 def show_table(table_data):
@@ -141,54 +212,6 @@ def show_table(table_data):
             table.add_row(*tuple(row.values()))
     console = Console()
     console.print(table)
-
-
-def find_lab_name(lab_lists, current_lab):
-    # find lab base on name or ID
-    lab = list(filter(lambda x: current_lab in x["name"] or current_lab in x["id"], lab_lists))
-    if len(lab) > 1:
-        print(f"[    Error ] ==> We found more than one lab with same {current_lab}.\n"
-              "[    Info  ] ==> Please check below table and provide more specfic information")
-        show_table({"Dublicate labs": lab})
-        sys.exit()
-    elif len(lab) == 0:
-        print(f"[   Error ] ==> We couldn't find {current_lab} in below lists")
-        show_table({"List of Labs":lab_lists})
-        sys.exit()
-    return lab[0]
-
-def is_node_id(node_id, all_nodes):
-    # check if user input is a node
-    if node := list(filter(lambda x: x["id"] == node_id, all_nodes)):
-        return node[0]
-    else:
-        print("[    Error ] ==> selected Node ID is not avalible.")
-        print("[    Info  ] ==> below table is the list of avalible Nodes.")
-        if all_nodes:
-            show_table({"Nodes List": all_nodes})
-        sys.exit(1)
-
-def get_linux_interfaces(client) -> json.loads:
-    # get linux server interfaces as json 
-    _stdin, _stdout,_stderr = client.exec_command("ip --json add")
-    linux_interfaces = _stdout.read().decode()
-    return json.loads(linux_interfaces)
-
-def get_lab_file(client, lab_file_name) -> xmltodict.parse:
-    # read the lab file and convert it to dict
-    _stdin, _stdout,_stderr = client.exec_command(f"cat /opt/unetlab/labs/{lab_file_name}")
-    lab_file = _stdout.read().decode()
-    return xmltodict.parse(lab_file)
-
-def update_lab_file(client, lab_file_name, lab_file):
-    # write lab file with new information
-    new_unl = xmltodict.unparse(lab_file, pretty=True)
-    ftp = client.open_sftp()
-    file = ftp.file(f"/opt/unetlab/labs/{lab_file_name}","w")
-    file.write(new_unl)
-    file.flush()
-    file.close()
-    ftp.close()
 
 def create_network(lab_networks, network_id, network_name):
     # this function will edit the lab file and add a new network
