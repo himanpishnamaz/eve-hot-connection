@@ -50,6 +50,8 @@ After encountering this challenge numerous times, I embarked on finding a soluti
         python remove_link.py -C 2c940253- # script will ask user to give node details and it will remove the connection from both end
     ```
 
+## how to Video
+https://www.youtube.com/watch?v=oHdxKtHhWbU&t=75s
 
 ## Problems and Suggestions:
 If you encounter any issues while using the script or have suggestions for improvement, please don't hesitate to reach out. Your feedback is invaluable in enhancing the functionality and efficiency of the script. Feel free to share any problems you encounter or ideas for enhancements, and together, we can continue refining and improving the script.
