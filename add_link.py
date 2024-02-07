@@ -1,17 +1,15 @@
 import sys
-import os
 import dotenv
 from signal import signal, SIGINT
-
-
-from util import init_args
-from util import handler
-from util import create_network, connect_node_to_network
 
 from util import EVE_HTTP
 from util import EVE_SSH
 from util import EVE_INFO
 
+from util import init_args
+from util import handler
+from util import create_network
+from util import connect_node_to_network
 from util import init_server_info
 from util import args_check
 
@@ -48,12 +46,12 @@ if __name__ == "__main__":
     node_a, node_a_intf, node_a_type = eve_http.select_node_interface(device="A")
     # check if interface is not connected
     if node_a_type != "net" and node_a_intf["connected"] == "True":
-        print("[    Error ] ==> selected Interface is connected already.")
+        print(f"[    Error ] ==> Interface {node_a_intf['name']} on device {node_a['name']} is connected already.")
         sys.exit(1)
     node_b, node_b_intf, node_b_type = eve_http.select_node_interface(device="B")
     # check if interface is not connected
     if node_b_type != "net" and node_b_intf["connected"] == "True":
-        print("[    Error ] ==> selected Interface is connected already.")
+        print(f"[    Error ] ==> Interface {node_b_intf['name']} on device {node_b['name']} is connected already.")
         sys.exit(1)
 
     if node_a_type == "node" and node_b_type == "node":
@@ -62,19 +60,23 @@ if __name__ == "__main__":
         print(f"[    Info  ] ==> NOde A interface name on Linux = {linux_intf_a}")
         print(f"[    Info  ] ==> NOde B interface name on Linux = {linux_intf_b}")
 
-        # get last bridge id
+        # get not used bridge id
         if eve_http.lab_networks:
-            networks = []
-            for item in eve_http.lab_networks:
-                networks.append(int(item))
-            networks.sort()
-            network_id = networks[-1] + 1
+            net_ids = [int(item) for item in eve_http.lab_networks]
+            net_ids.sort()
+            max = net_ids[-1]
+            not_used_ids = []
+            for item in range(1, max+1):
+                if item not in net_ids:
+                    not_used_ids.append()
+            if not_used_ids:
+                network_id = not_used_ids[0]
+            else:
+                network_id = max + 1
         else:
             network_id = 1
         bridge_name = f"vnet{ eve_http.user_id }_{network_id}"
-
         print(f"[    Info  ] ==> Bridge name on Linux = {bridge_name}")
-
 
         # read lab file
         lab_file = eve_ssh.get_lab_file(lab_info=eve_http.lab)
@@ -111,7 +113,7 @@ if __name__ == "__main__":
 
 
     elif node_a_type == "net" and node_b_type == "net":
-        print("[    Error ] ==> connot connect Bridge to Bridge")
+        print("[    Error ] ==> cannot connect Bridge to Bridge")
         sys.exit(1)
 
     elif node_a_type == "net" or node_b_type == "net":

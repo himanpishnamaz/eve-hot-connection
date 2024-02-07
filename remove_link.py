@@ -1,19 +1,15 @@
 import sys
-import os
 import dotenv
 from signal import signal, SIGINT
-
-
-from util import init_args, show_table
-from util import handler
 
 from util import EVE_HTTP
 from util import EVE_SSH
 from util import EVE_INFO
 
+from util import init_args
+from util import handler
 from util import init_server_info
 from util import args_check
-
 
 
 if __name__ == "__main__":
@@ -40,7 +36,7 @@ if __name__ == "__main__":
     node, node_intf, _ = eve_http.select_node_interface(device="A")
     # check if interface is connected
     if node_intf["connected"] == "False":
-        print("[    Error ] ==> selected Interface is not connected.")
+        print(f"[    Error ] ==> selected Interface {node_intf['name']} on device {node['name']} is not connected.")
         sys.exit(1)
     linux_intf = f"vunl{eve_http.user_id}_{node['id']}_{node_intf['id']}"
 

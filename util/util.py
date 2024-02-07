@@ -141,6 +141,9 @@ class EVE_HTTP():
             return node, None, "net"
 
         node_interfaces = self.get_node_interfaces(node)
+        if len(node_interfaces) == 1:
+            return node, node_interfaces[0], "node"
+
         show_table({f"Interfaces for {node['name']}": node_interfaces})
         node_intf = input("Please Insert port name or id from above Table: ")
         node_intf = list(filter(lambda x: x["id"] == node_intf or x["name"] == node_intf, node_interfaces))
