@@ -10,12 +10,12 @@ After encountering this challenge numerous times, I embarked on finding a soluti
 - step 1:
     clone the repo using
     ```
-    git clone 
+    git clone https://github.com/himanpishnamaz/eve-hot-connection.git
     ```
 - step 2
-    install requirment packages
+    install requirement packages
     ```
-    pip install -r .\requirements.txt
+    pip install -r requirements.txt
     ```
 - step 3
     edit .env file and add your eve server information.Script need have ssh access and http access to server.
