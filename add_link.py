@@ -68,7 +68,7 @@ if __name__ == "__main__":
             not_used_ids = []
             for item in range(1, max+1):
                 if item not in net_ids:
-                    not_used_ids.append()
+                    not_used_ids.append(item)
             if not_used_ids:
                 network_id = not_used_ids[0]
             else:

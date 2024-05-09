@@ -71,7 +71,7 @@ class EVE_HTTP():
 
     def find_lab_name(self):
         # find lab base on name or ID
-        lab = list(filter(lambda x: self.lab_name in x["name"] or self.lab_name in x["id"], self.lab_lists))
+        lab = list(filter(lambda x: self.lab_name in x["name"] or self.lab_name in x['id'], self.lab_lists))
         if len(lab) > 1:
             print(f"[    Error ] ==> We found more than one lab with same {self.lab_name} information.\n")
             return False
